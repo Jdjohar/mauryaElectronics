@@ -40,46 +40,70 @@
 //   console.log(`Example app listening on port ${port}`)
 // })
 
-const express = require('express');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const path = require('path');
-const nodemailer = require('nodemailer');
-const { job } = require('../cron');
-const mongoDB = require('../db');
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const path = require("path");
 
-mongoDB();
+// Safe import of local modules
+let mongoDB, job;
+try {
+  mongoDB = require("../db");
+  job = require("../cron").job;
+} catch (err) {
+  console.error("Local module error:", err.message);
+}
 
 const app = express();
 
-// Increase payload limit
-app.use(bodyParser.json({ limit: '10mb' }));
-app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
+// Only connect to MongoDB once (important for serverless)
+if (mongoDB) {
+  mongoDB().catch(err => console.error("MongoDB connection failed:", err));
+}
 
-// Start cron job
-job.start();
+// Run cron safely (Vercel may freeze functions, so this might not persist)
+if (job && !job.running) {
+  try {
+    job.start();
+  } catch (err) {
+    console.error("Cron job error:", err.message);
+  }
+}
 
-// Configure CORS
-const corsOptions = {
-  origin: [
-    "http://localhost:5173",
-    "https://maurya-electronics-mk.vercel.app",
-  ],
-  methods: "GET, POST, OPTIONS, PUT, DELETE",
-  allowedHeaders: "Content-Type, Authorization, Origin, X-Requested-With, Accept",
-};
-app.use(cors(corsOptions));
+// Middleware
+app.use(bodyParser.json({ limit: "10mb" }));
+app.use(bodyParser.urlencoded({ limit: "10mb", extended: true }));
 
-// Serve static files (optional, works for uploaded files if needed)
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// CORS setup
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "https://maurya-electronics-mk.vercel.app",
+    ],
+    methods: "GET,POST,PUT,DELETE,OPTIONS",
+    allowedHeaders: "Content-Type,Authorization,Origin,X-Requested-With,Accept",
+  })
+);
 
-// Test route
-app.get('/', (req, res) => {
-  res.send('Hello from Vercel Express!');
+// Serve static files (if any)
+app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+
+// Health check
+app.get("/", (req, res) => {
+  res.status(200).send("✅ Express API is running on Vercel!");
 });
 
-// Main routes
-app.use('/api', require('../Routes/api'));
+// Import routes safely
+try {
+  const apiRoutes = require("../Routes/api");
+  app.use("/api", apiRoutes);
+} catch (err) {
+  console.error("Error loading routes:", err.message);
+  app.get("/api", (req, res) =>
+    res.status(500).send("API routes not loaded.")
+  );
+}
 
-// Export the app — Vercel will handle listening
+// ✅ Must export the app for Vercel — no app.listen()
 module.exports = app;
