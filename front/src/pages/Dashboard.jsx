@@ -11,7 +11,7 @@ import { FileText, Users, Wrench, Clock, CheckCircle, XCircle, Package } from 'l
  * - Toggle in header switches cards and the technician list between All-time and Today.
  */
 
-const BASE = 'https://maurya-electronics.vercel.app';
+const BASE = 'https://maurya-electronics.vercel.app/api';
 const ENDPOINTS = {
   complaints: `${BASE}/complaints`,
   employees: `${BASE}/employees`,

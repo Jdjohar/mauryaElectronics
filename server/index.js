@@ -44,51 +44,75 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
-const nodemailer = require('nodemailer');
-const mongoDB = require('../db');
-const { job } = require('../cron');
 
-// Create Express app
 const app = express();
 
-// Connect to MongoDB (only once)
-mongoDB()
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ MongoDB connection error:", err.message));
+// --- Safe imports (won’t crash function) ---
+let mongoDB, job;
+try {
+  mongoDB = require('../db');
+} catch (err) {
+  console.error("⚠️ db.js not found or failed to load:", err.message);
+}
 
-// Set maximum payload size limit
+try {
+  job = require('../cron')?.job;
+} catch (err) {
+  console.error("⚠️ cron.js not found or failed to load:", err.message);
+}
+
+let apiRoutes;
+try {
+  apiRoutes = require('../Routes/api');
+} catch (err) {
+  console.error("⚠️ Routes/api.js not found or failed to load:", err.message);
+}
+
+// --- Middleware setup ---
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
 
-// Start cron job (Note: may not persist on Vercel)
-try {
-  job.start();
-  console.log("✅ Cron job started");
-} catch (err) {
-  console.error("❌ Cron job error:", err.message);
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "https://maurya-electronics-mk.vercel.app",
+    ],
+    methods: "GET,POST,OPTIONS,PUT,DELETE",
+    allowedHeaders: "Content-Type,Authorization,Origin,X-Requested-With,Accept",
+  })
+);
+
+// --- Connect MongoDB safely ---
+if (mongoDB) {
+  mongoDB()
+    .then(() => console.log("✅ MongoDB connected"))
+    .catch(err => console.error("❌ MongoDB connection error:", err.message));
 }
 
-// CORS configuration
-const corsOptions = {
-  origin: [
-    "http://localhost:5173",
-    "https://maurya-electronics-mk.vercel.app",
-  ],
-  methods: "GET, POST, OPTIONS, PUT, DELETE",
-  allowedHeaders: "Content-Type, Authorization, Origin, X-Requested-With, Accept"
-};
-app.use(cors(corsOptions));
+// --- Start cron safely (optional) ---
+if (job && typeof job.start === 'function') {
+  try {
+    job.start();
+    console.log("✅ Cron job started");
+  } catch (err) {
+    console.error("⚠️ Cron job error:", err.message);
+  }
+}
 
-// Serve uploaded files
+// --- Static files ---
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Basic test route
+// --- Routes ---
 app.get('/', (req, res) => {
   res.send('✅ Express API is running on Vercel!');
 });
 
-// Main API routes
-app.use('/api', require('../Routes/api'));
+if (apiRoutes) {
+  app.use('/api', apiRoutes);
+} else {
+  app.get('/api', (req, res) => res.status(500).send('⚠️ API routes failed to load.'));
+}
 
-// ❗ DO NOT use app.listen() — Vercel handles the server
+// --- Export app (no app.listen) ---
 module.exports = app;

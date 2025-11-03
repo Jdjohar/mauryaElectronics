@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import { Plus, Edit2, Search, Download, MessageCircle } from 'lucide-react';
 import Modal from '../components/Modal';
 
-const BASE = 'https://maurya-electronics.vercel.app';
+const BASE = 'https://maurya-electronics.vercel.app/api';
 
 function normalize(item) {
   if (!item) return item;

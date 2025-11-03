@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2, Settings as SettingsIcon, Package, MapPin } from 'lucide-react';
 import Modal from '../components/Modal';
 
-const BASE_URL = 'https://maurya-electronics.vercel.app';
+const BASE_URL = 'https://maurya-electronics.vercel.app/api';
 
 function normalizeId(obj) {
     if (!obj) return obj;
