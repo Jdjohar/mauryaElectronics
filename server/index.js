@@ -50,20 +50,20 @@ const app = express();
 // --- Safe imports (won’t crash function) ---
 let mongoDB, job;
 try {
-  mongoDB = require('../db');
+  mongoDB = require('./db');
 } catch (err) {
   console.error("⚠️ db.js not found or failed to load:", err.message);
 }
 
 try {
-  job = require('../cron')?.job;
+  job = require('./cron')?.job;
 } catch (err) {
   console.error("⚠️ cron.js not found or failed to load:", err.message);
 }
 
 let apiRoutes;
 try {
-  apiRoutes = require('../Routes/api');
+  apiRoutes = require('./Routes/api');
 } catch (err) {
   console.error("⚠️ Routes/api.js not found or failed to load:", err.message);
 }
