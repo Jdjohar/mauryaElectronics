@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Search, Calendar, Download, ChevronDown, ChevronRight } from 'lucide-react';
 
-const BASE = 'http://localhost:3001/api';
+const BASE = 'https://maurya-electronics.vercel.app';
 const ENDPOINTS = {
   complaints: `${BASE}/complaints`,
   technicians: `${BASE}/technicians`,
