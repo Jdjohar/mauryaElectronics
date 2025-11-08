@@ -242,99 +242,99 @@ async function createUserForEmployee({ email, phone, name, password, role = 'emp
  *   "userPassword": "secret123" // optional but recommended if createUser true
  * }
  */
-router.post(
-  '/employees',
-  verifyToken,
-  requireRole(['admin']),
-  [
-    body('name').notEmpty().withMessage('Name is required'),
-    body('email').optional().isEmail().withMessage('Email invalid'),
-    body('phone').optional().isString(),
-    body('createUser').optional().isBoolean(),
-  ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+// router.post(
+//   '/employees',
+//   verifyToken,
+//   requireRole(['admin']),
+//   [
+//     body('name').notEmpty().withMessage('Name is required'),
+//     body('email').optional().isEmail().withMessage('Email invalid'),
+//     body('phone').optional().isString(),
+//     body('createUser').optional().isBoolean(),
+//   ],
+//   async (req, res) => {
+//     try {
+//       const errors = validationResult(req);
+//       if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-      const { name, phone, email, address, createUser, userPassword, meta } = req.body;
+//       const { name, phone, email, address, createUser, userPassword, meta } = req.body;
 
-      let userRef = null;
-      if (createUser) {
-        // create linked user (role = employee)
-        try {
-          const createdUser = await createUserForEmployee({
-            email,
-            phone,
-            name,
-            password: userPassword,
-            role: 'employee',
-          });
-          userRef = createdUser._id;
-        } catch (err) {
-          return res.status(400).json({ error: err.message });
-        }
-      }
+//       let userRef = null;
+//       if (createUser) {
+//         // create linked user (role = employee)
+//         try {
+//           const createdUser = await createUserForEmployee({
+//             email,
+//             phone,
+//             name,
+//             password: userPassword,
+//             role: 'employee',
+//           });
+//           userRef = createdUser._id;
+//         } catch (err) {
+//           return res.status(400).json({ error: err.message });
+//         }
+//       }
 
-      const emp = new Employee({
-        name,
-        phone: phone || '',
-        email: email ? String(email).toLowerCase() : '',
-        address: address || '',
-        user_ref: userRef,
-        meta: meta || {},
-      });
+//       const emp = new Employee({
+//         name,
+//         phone: phone || '',
+//         email: email ? String(email).toLowerCase() : '',
+//         address: address || '',
+//         user_ref: userRef,
+//         meta: meta || {},
+//       });
 
-      await emp.save();
-      // return populated user_ref if present
-      const out = await Employee.findById(emp._id).populate('user_ref', '-password').lean();
-      res.json({ success: true, employee: out });
-    } catch (err) {
-      console.error('employees:create', err);
-      res.status(500).json({ error: err.message });
-    }
-  }
-);
+//       await emp.save();
+//       // return populated user_ref if present
+//       const out = await Employee.findById(emp._id).populate('user_ref', '-password').lean();
+//       res.json({ success: true, employee: out });
+//     } catch (err) {
+//       console.error('employees:create', err);
+//       res.status(500).json({ error: err.message });
+//     }
+//   }
+// );
 
 /**
  * GET /employees
  * Admin: list all employees
  * Employee: return only their own employee record (if linked), otherwise empty
  */
-router.get('/employees', verifyToken, async (req, res) => {
-  try {
-    if (req.user.role === 'admin') {
-      const list = await Employee.find().sort({ createdAt: -1 }).populate('user_ref', '-password').lean();
-      return res.json(list);
-    }
+// router.get('/employees', verifyToken, async (req, res) => {
+//   try {
+//     if (req.user.role === 'admin') {
+//       const list = await Employee.find().sort({ createdAt: -1 }).populate('user_ref', '-password').lean();
+//       return res.json(list);
+//     }
 
-    if (req.user.role === 'employee') {
-      const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
-      return res.json(emp ? [emp] : []);
-    }
+//     if (req.user.role === 'employee') {
+//       const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
+//       return res.json(emp ? [emp] : []);
+//     }
 
-    return res.status(403).json({ error: 'Forbidden' });
-  } catch (err) {
-    console.error('employees:list', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+//     return res.status(403).json({ error: 'Forbidden' });
+//   } catch (err) {
+//     console.error('employees:list', err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 
 
 /**
  * GET /employees/me
  * return the employee record linked to current logged-in user
  */
-router.get('/employees/me', verifyToken, async (req, res) => {
-  try {
-    const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
-    if (!emp) return res.status(404).json({ error: 'Employee record not found for this user' });
-    res.json(emp);
-  } catch (err) {
-    console.error('employees:me', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+// router.get('/employees/me', verifyToken, async (req, res) => {
+//   try {
+//     const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
+//     if (!emp) return res.status(404).json({ error: 'Employee record not found for this user' });
+//     res.json(emp);
+//   } catch (err) {
+//     console.error('employees:me', err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 
 
 /**
@@ -342,25 +342,25 @@ router.get('/employees/me', verifyToken, async (req, res) => {
  * Admin: can fetch any
  * Employee: can fetch only their own record
  */
-router.get('/employees/:id', verifyToken, async (req, res) => {
-  try {
-    const id = req.params.id;
-    const emp = await Employee.findById(id).populate('user_ref', '-password').lean();
-    if (!emp) return res.json({});
+// router.get('/employees/:id', verifyToken, async (req, res) => {
+//   try {
+//     const id = req.params.id;
+//     const emp = await Employee.findById(id).populate('user_ref', '-password').lean();
+//     if (!emp) return res.json({});
 
-    if (req.user.role === 'admin') return res.json(emp);
+//     if (req.user.role === 'admin') return res.json(emp);
 
-    if (req.user.role === 'employee') {
-      if (String(emp.user_ref?._id) === String(req.user._id)) return res.json(emp);
-      return res.status(403).json({ error: 'Forbidden' });
-    }
+//     if (req.user.role === 'employee') {
+//       if (String(emp.user_ref?._id) === String(req.user._id)) return res.json(emp);
+//       return res.status(403).json({ error: 'Forbidden' });
+//     }
 
-    return res.status(403).json({ error: 'Forbidden' });
-  } catch (err) {
-    console.error('employees:get', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+//     return res.status(403).json({ error: 'Forbidden' });
+//   } catch (err) {
+//     console.error('employees:get', err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 
 /**
  * PUT /employees/:id
@@ -369,62 +369,62 @@ router.get('/employees/:id', verifyToken, async (req, res) => {
  *
  * If admin wants to update linked user fields (email/phone), they should use User routes.
  */
-router.put(
-  '/employees/:id',
-  verifyToken,
-  [
-    body('email').optional().isEmail().withMessage('Invalid email'),
-    body('phone').optional().isString(),
-    body('name').optional().notEmpty(),
-  ],
-  async (req, res) => {
-    try {
-      const id = req.params.id;
-      const emp = await Employee.findById(id);
-      if (!emp) return res.status(404).json({ error: 'Employee not found' });
+// router.put(
+//   '/employees/:id',
+//   verifyToken,
+//   [
+//     body('email').optional().isEmail().withMessage('Invalid email'),
+//     body('phone').optional().isString(),
+//     body('name').optional().notEmpty(),
+//   ],
+//   async (req, res) => {
+//     try {
+//       const id = req.params.id;
+//       const emp = await Employee.findById(id);
+//       if (!emp) return res.status(404).json({ error: 'Employee not found' });
 
-      if (req.user.role === 'admin') {
-        // admin update path
-        const updateBody = { ...req.body };
-        if (updateBody.user_ref === undefined) delete updateBody.user_ref;
-        const updated = await Employee.findByIdAndUpdate(id, updateBody, { new: true }).populate('user_ref', '-password').lean();
-        return res.json(updated);
-      } else if (req.user.role === 'employee') {
-        // allow only if this employee linked to current user
-        if (String(emp.user_ref ?? '') !== String(req.user._id)) {
-          return res.status(403).json({ error: 'Forbidden' });
-        }
-        const allowed = ['name', 'phone', 'address', 'meta'];
-        const payload = {};
-        for (const k of allowed) if (req.body[k] !== undefined) payload[k] = req.body[k];
-        Object.assign(emp, payload);
-        await emp.save();
-        const out = await Employee.findById(emp._id).populate('user_ref', '-password').lean();
-        return res.json(out);
-      } else {
-        return res.status(403).json({ error: 'Forbidden' });
-      }
-    } catch (err) {
-      console.error('employees:update', err);
-      res.status(500).json({ error: err.message });
-    }
-  }
-);
+//       if (req.user.role === 'admin') {
+//         // admin update path
+//         const updateBody = { ...req.body };
+//         if (updateBody.user_ref === undefined) delete updateBody.user_ref;
+//         const updated = await Employee.findByIdAndUpdate(id, updateBody, { new: true }).populate('user_ref', '-password').lean();
+//         return res.json(updated);
+//       } else if (req.user.role === 'employee') {
+//         // allow only if this employee linked to current user
+//         if (String(emp.user_ref ?? '') !== String(req.user._id)) {
+//           return res.status(403).json({ error: 'Forbidden' });
+//         }
+//         const allowed = ['name', 'phone', 'address', 'meta'];
+//         const payload = {};
+//         for (const k of allowed) if (req.body[k] !== undefined) payload[k] = req.body[k];
+//         Object.assign(emp, payload);
+//         await emp.save();
+//         const out = await Employee.findById(emp._id).populate('user_ref', '-password').lean();
+//         return res.json(out);
+//       } else {
+//         return res.status(403).json({ error: 'Forbidden' });
+//       }
+//     } catch (err) {
+//       console.error('employees:update', err);
+//       res.status(500).json({ error: err.message });
+//     }
+//   }
+// );
 
 
 /**
  * DELETE /employees/:id
  * Admin only
  */
-router.delete('/employees/:id', verifyToken, requireRole(['admin']), async (req, res) => {
-  try {
-    await Employee.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
-  } catch (err) {
-    console.error('employees:delete', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+// router.delete('/employees/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+//   try {
+//     await Employee.findByIdAndDelete(req.params.id);
+//     res.json({ success: true });
+//   } catch (err) {
+//     console.error('employees:delete', err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 
 
 
@@ -434,55 +434,57 @@ router.delete('/employees/:id', verifyToken, requireRole(['admin']), async (req,
 // -----------------------------
 // EMPLOYEES
 // -----------------------------
-// router.post('/employees', async (req, res) => {
-//   try {
-//     const emp = new Employee(req.body);
-//     await emp.save();
-//     res.json({ success: true, employee: emp });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
+router.post('/employees', async (req, res) => {
+  try {
+    const emp = new Employee(req.body);
+    await emp.save();
+    res.json({ success: true, employee: emp });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-// router.get('/employees', async (req, res) => {
-//   try {
-//     const list = await Employee.find().sort({ createdAt: -1 });
-//     res.json(list);
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
+router.get('/employees', async (req, res) => {
+  try {
+    const list = await Employee.find().sort({ createdAt: -1 });
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-// router.get('/employees/:id', async (req, res) => {
-//   try {
-//     const e = await Employee.findById(req.params.id);
-//     res.json(e || {});
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
+router.get('/employees/:id', async (req, res) => {
+  try {
+    const e = await Employee.findById(req.params.id);
+    res.json(e || {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-// router.put('/employees/:id', async (req, res) => {
-//   try {
-//     const upd = await Employee.findByIdAndUpdate(req.params.id, req.body, { new: true });
-//     res.json(upd);
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
+router.put('/employees/:id', async (req, res) => {
+  try {
+    const upd = await Employee.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json(upd);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-// router.delete('/employees/:id', async (req, res) => {
-//   try {
-//     await Employee.findByIdAndDelete(req.params.id);
-//     res.json({ success: true });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
+router.delete('/employees/:id', async (req, res) => {
+  try {
+    await Employee.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // -----------------------------
 // TECHNICIANS
 // -----------------------------
+
+
 router.post('/technicians', async (req, res) => {
   try {
     const tech = new Technician(req.body);
