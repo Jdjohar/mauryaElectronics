@@ -244,7 +244,7 @@ async function createUserForEmployee({ email, phone, name, password, role = 'emp
  */
 router.post(
   '/employees',
-  
+  verifyToken,
   requireRole(['admin']),
   [
     body('name').notEmpty().withMessage('Name is required'),
@@ -301,20 +301,18 @@ router.post(
  * Admin: list all employees
  * Employee: return only their own employee record (if linked), otherwise empty
  */
-router.get('/employees',  async (req, res) => {
+router.get('/employees', verifyToken, async (req, res) => {
   try {
     if (req.user.role === 'admin') {
       const list = await Employee.find().sort({ createdAt: -1 }).populate('user_ref', '-password').lean();
       return res.json(list);
     }
 
-    // For employees, return only the employee record linked to their user account
     if (req.user.role === 'employee') {
       const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
       return res.json(emp ? [emp] : []);
     }
 
-    // other roles (customer etc.) not allowed
     return res.status(403).json({ error: 'Forbidden' });
   } catch (err) {
     console.error('employees:list', err);
@@ -322,13 +320,13 @@ router.get('/employees',  async (req, res) => {
   }
 });
 
+
 /**
  * GET /employees/me
  * return the employee record linked to current logged-in user
  */
-router.get('/employees/me', async (req, res) => {
+router.get('/employees/me', verifyToken, async (req, res) => {
   try {
-    // only useful for employees who have user_ref. Admins may not have employee record.
     const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
     if (!emp) return res.status(404).json({ error: 'Employee record not found for this user' });
     res.json(emp);
@@ -338,21 +336,21 @@ router.get('/employees/me', async (req, res) => {
   }
 });
 
+
 /**
  * GET /employees/:id
  * Admin: can fetch any
  * Employee: can fetch only their own record
  */
-router.get('/employees/:id',  async (req, res) => {
+router.get('/employees/:id', verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
     const emp = await Employee.findById(id).populate('user_ref', '-password').lean();
-    if (!emp) return res.json({}); // keep current behaviour
+    if (!emp) return res.json({});
 
     if (req.user.role === 'admin') return res.json(emp);
 
     if (req.user.role === 'employee') {
-      // allow only if this employee is linked to current user
       if (String(emp.user_ref?._id) === String(req.user._id)) return res.json(emp);
       return res.status(403).json({ error: 'Forbidden' });
     }
@@ -373,7 +371,7 @@ router.get('/employees/:id',  async (req, res) => {
  */
 router.put(
   '/employees/:id',
-  
+  verifyToken,
   [
     body('email').optional().isEmail().withMessage('Invalid email'),
     body('phone').optional().isString(),
@@ -386,13 +384,16 @@ router.put(
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
 
       if (req.user.role === 'admin') {
-        // admin may update all fields
+        // admin update path
+        const updateBody = { ...req.body };
+        if (updateBody.user_ref === undefined) delete updateBody.user_ref;
+        const updated = await Employee.findByIdAndUpdate(id, updateBody, { new: true }).populate('user_ref', '-password').lean();
+        return res.json(updated);
       } else if (req.user.role === 'employee') {
-        // only allow if this employee linked to current user
+        // allow only if this employee linked to current user
         if (String(emp.user_ref ?? '') !== String(req.user._id)) {
           return res.status(403).json({ error: 'Forbidden' });
         }
-        // restrict fields employees may update: name, phone, address, meta, is_active? (no)
         const allowed = ['name', 'phone', 'address', 'meta'];
         const payload = {};
         for (const k of allowed) if (req.body[k] !== undefined) payload[k] = req.body[k];
@@ -403,13 +404,6 @@ router.put(
       } else {
         return res.status(403).json({ error: 'Forbidden' });
       }
-
-      // admin update path
-      const updateBody = { ...req.body };
-      // protect user_ref updates from accidental overwrite unless admin intended
-      if (updateBody.user_ref === undefined) delete updateBody.user_ref;
-      const updated = await Employee.findByIdAndUpdate(id, updateBody, { new: true }).populate('user_ref', '-password').lean();
-      res.json(updated);
     } catch (err) {
       console.error('employees:update', err);
       res.status(500).json({ error: err.message });
@@ -417,11 +411,12 @@ router.put(
   }
 );
 
+
 /**
  * DELETE /employees/:id
  * Admin only
  */
-router.delete('/employees/:id',  requireRole(['admin']), async (req, res) => {
+router.delete('/employees/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     await Employee.findByIdAndDelete(req.params.id);
     res.json({ success: true });
@@ -430,6 +425,7 @@ router.delete('/employees/:id',  requireRole(['admin']), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 
