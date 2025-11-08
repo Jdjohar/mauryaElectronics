@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2, Search } from 'lucide-react';
 import Modal from '../components/Modal';
 
-const BASE = 'https://maurya-electronics.vercel.app/api';
+const BASE = 'https://mauryaelectronics.onrender.com/api';
 
 // Helper: normalize item -> ensure `id` exists (string)
 function normalize(item) {

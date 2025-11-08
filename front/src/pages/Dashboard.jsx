@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { FileText, Users, Wrench, Clock, CheckCircle, XCircle, Package } from 'lucide-react';
 
-const BASE = 'https://maurya-electronics.vercel.app/api';
+const BASE = 'https://mauryaelectronics.onrender.com/api';
 const ENDPOINTS = {
   complaints: `${BASE}/complaints`,
   employees: `${BASE}/employees`,

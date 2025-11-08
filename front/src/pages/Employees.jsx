@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2, Search } from 'lucide-react';
 import Modal from '../components/Modal';
 
-const BASE_URL = 'https://maurya-electronics.vercel.app/api';
+const BASE_URL = 'https://mauryaelectronics.onrender.com/api';
 
 export default function Employees({ employees: employeesProp = [], onCreate, onUpdate, onDelete }) {
   const [employees, setEmployees] = useState([]);

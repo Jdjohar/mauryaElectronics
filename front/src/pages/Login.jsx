@@ -45,7 +45,7 @@ export default function Login() {
         password,
       };
 
-      const res = await fetch('https://maurya-electronics.vercel.app/api/login', {
+      const res = await fetch('https://mauryaelectronics.onrender.com/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

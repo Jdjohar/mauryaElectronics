@@ -8,7 +8,7 @@ import { Button, Box, Chip, IconButton } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import WhatsAppIcon from '@mui/icons-material/WhatsApp';
 
-const BASE = 'https://maurya-electronics.vercel.app/api';
+const BASE = 'https://mauryaelectronics.onrender.com/api';
 
 function normalize(item) {
   if (!item) return item;
