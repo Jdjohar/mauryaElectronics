@@ -244,7 +244,7 @@ async function createUserForEmployee({ email, phone, name, password, role = 'emp
  */
 router.post(
   '/employees',
-  verifyToken,
+  
   requireRole(['admin']),
   [
     body('name').notEmpty().withMessage('Name is required'),
@@ -301,7 +301,7 @@ router.post(
  * Admin: list all employees
  * Employee: return only their own employee record (if linked), otherwise empty
  */
-router.get('/employees', verifyToken, async (req, res) => {
+router.get('/employees',  async (req, res) => {
   try {
     if (req.user.role === 'admin') {
       const list = await Employee.find().sort({ createdAt: -1 }).populate('user_ref', '-password').lean();
@@ -326,7 +326,7 @@ router.get('/employees', verifyToken, async (req, res) => {
  * GET /employees/me
  * return the employee record linked to current logged-in user
  */
-router.get('/employees/me', verifyToken, async (req, res) => {
+router.get('/employees/me', async (req, res) => {
   try {
     // only useful for employees who have user_ref. Admins may not have employee record.
     const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
@@ -343,7 +343,7 @@ router.get('/employees/me', verifyToken, async (req, res) => {
  * Admin: can fetch any
  * Employee: can fetch only their own record
  */
-router.get('/employees/:id', verifyToken, async (req, res) => {
+router.get('/employees/:id',  async (req, res) => {
   try {
     const id = req.params.id;
     const emp = await Employee.findById(id).populate('user_ref', '-password').lean();
@@ -373,7 +373,7 @@ router.get('/employees/:id', verifyToken, async (req, res) => {
  */
 router.put(
   '/employees/:id',
-  verifyToken,
+  
   [
     body('email').optional().isEmail().withMessage('Invalid email'),
     body('phone').optional().isString(),
@@ -421,7 +421,7 @@ router.put(
  * DELETE /employees/:id
  * Admin only
  */
-router.delete('/employees/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.delete('/employees/:id',  requireRole(['admin']), async (req, res) => {
   try {
     await Employee.findByIdAndDelete(req.params.id);
     res.json({ success: true });
@@ -805,7 +805,7 @@ function normalizePartsDocs(complaintId, missing_parts = []) {
 /**
  * POST /complaints - create single complaint
  */
-router.post('/complaints', verifyToken, requireRole(['admin','employee']), async (req, res) => {
+router.post('/complaints',  requireRole(['admin','employee']), async (req, res) => {
   try {
     const {
       complaint_no,
