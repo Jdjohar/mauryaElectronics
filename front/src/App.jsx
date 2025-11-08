@@ -1,4 +1,5 @@
-import { useState } from 'react';
+// src/App.jsx
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Employees from './pages/Employees';
@@ -6,33 +7,93 @@ import Technicians from './pages/Technicians';
 import Complaints from './pages/Complaints';
 import Services from './pages/Services';
 import Reports from './pages/Reports';
+import Login from './pages/Login';
+import RequireAuth from './components/RequireAuth';
 
 function App() {
-  const [currentPage, setCurrentPage] = useState('dashboard');
-
-  const renderPage = () => {
-    switch (currentPage) {
-      case 'dashboard':
-        return <Dashboard />;
-      case 'employees':
-        return <Employees />;
-      case 'technicians':
-        return <Technicians />;
-      case 'complaints':
-        return <Complaints />;
-      case 'services':
-        return <Services />;
-      case 'reports':
-        return <Reports />;
-      default:
-        return <Dashboard />;
-    }
-  };
-
   return (
-    <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
-      {renderPage()}
-    </Layout>
+    <BrowserRouter>
+      <Routes>
+        {/* Public route */}
+        <Route path="/login" element={<Login />} />
+
+        {/* Protected area */}
+        <Route
+          path="/"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Dashboard />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+
+        {/* If you want to protect each page and keep layout consistent: */}
+        <Route
+          path="/employees"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Employees />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/technicians"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Technicians />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/complaints"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Complaints />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/services"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Services />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Reports />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+
+        {/* Fallback to dashboard for unknown routes (protected) */}
+        <Route
+          path="*"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Dashboard />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+      </Routes>
+    </BrowserRouter>
   );
 }
 

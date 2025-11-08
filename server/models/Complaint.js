@@ -24,7 +24,7 @@ const StatusHistorySchema = new Schema(
 
 const ComplaintSchema = new Schema(
   {
-    complaint_no: { type: String, trim: true, index: true, default: '' },
+    complaint_no: { type: String, trim: true, index: true,unique: true, default: '' },
     customer_name: { type: String, required: true, trim: true },
     phone: { type: String, required: true, trim: true },
     phone2: { type: String, trim: true, default: '' },
@@ -35,21 +35,17 @@ const ComplaintSchema = new Schema(
     technician_id: { type: Schema.Types.ObjectId, ref: 'Technician', default: null },
     remarks: { type: String, default: '' },
     status: { type: String, enum: STATUS_ENUM, default: 'open' },
-
+    complaint_type: { type: String, enum: ['IW', 'OW'], default: 'OW' },
     opened_at: { type: Date, default: null },
     closed_at: { type: Date, default: null },
     time_to_close_ms: { type: Number, default: null },
-
     status_history: { type: [StatusHistorySchema], default: [] },
-
     created_by: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     scheduled_at: { type: Date, default: null },
     group_id: { type: String, default: '' },
-
     // store effective prices used for this complaint (so historical records remain valid)
     technician_price_charged: { type: Number, default: null },
     service_base_price_charged: { type: Number, default: null },
-
     meta: { type: Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }

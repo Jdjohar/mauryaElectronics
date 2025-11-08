@@ -1,7 +1,12 @@
-// Complaints.jsx (complete) — shows loading overlay when uploading media
+// Complaints.jsx (DataGrid version)
+// NOTE: requires @mui/material and @mui/x-data-grid
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { Plus, Edit2, Search, Download, MessageCircle } from 'lucide-react';
 import Modal from '../components/Modal';
+import { DataGrid, GridToolbar } from '@mui/x-data-grid';
+import { Button, Box, Chip, IconButton } from '@mui/material';
+import EditIcon from '@mui/icons-material/Edit';
+import WhatsAppIcon from '@mui/icons-material/WhatsApp';
 
 const BASE = 'https://maurya-electronics.vercel.app/api';
 
@@ -74,29 +79,32 @@ export default function Complaints({
     customer_name: '',
     phone: '',
     phone2: '',
-    pin_code: '',
+    pin_code: '',     // will be set from pincodes dropdown
+    product_id: '',   // new: selected product
     address: '',
     service_id: '',
     problem_description: '',
     technician_id: '',
     remarks: '',
     status: 'open',
+    complaint_type: 'OW',
   });
 
-  // This holds final uploaded urls (persisted attachments)
+  // product & pincode lists
+  const [products, setProducts] = useState([]);
+  const [pincodes, setPincodes] = useState([]);
+
+
+  // media state
   const [mediaUrls, setMediaUrls] = useState({
     images: ['', '', ''],
     video: '',
   });
-
-  // Previews for local selections and existing remote URLs (images/video)
   const [mediaPreviews, setMediaPreviews] = useState({
     images: ['', '', ''],
     video: '',
   });
-
-  // Local files selected but not uploaded yet (File objects)
-  const [filesToUpload, setFilesToUpload] = useState([]); // array of File
+  const [filesToUpload, setFilesToUpload] = useState([]);
 
   // other
   const [missingParts, setMissingParts] = useState([{ brand: '', model: '', part_name: '' }]);
@@ -107,7 +115,7 @@ export default function Complaints({
 
   // Utilities
   const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  const genComplaintNo = () => 'CMP-' + new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+  const genComplaintNo = () => 'MK-' + new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
 
   // --- Initialization: load from props first, then fetch from API ---
   useEffect(() => {
@@ -115,6 +123,10 @@ export default function Complaints({
       setServices(servicesProp.map(normalize));
     }
   }, [servicesProp]);
+  useEffect(() => {
+    const bad = (filteredComplaints || []).filter((r) => !r || typeof r !== 'object');
+    if (bad.length) console.error('Found invalid rows:', bad);
+  }, [filteredComplaints]);
 
   useEffect(() => {
     if (Array.isArray(techniciansProp) && techniciansProp.length > 0 && technicians.length === 0) {
@@ -123,24 +135,30 @@ export default function Complaints({
   }, [techniciansProp]);
 
   useEffect(() => {
-    // seed with prop complaints if provided
     if (Array.isArray(complaintsProp) && complaintsProp.length > 0 && complaints.length === 0) {
       setComplaints(complaintsProp.map(normalize).sort(sortByCreatedAtDesc));
     }
-    // fetch live
     fetchInitialData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    const filtered = complaints.filter(
+    const arr = complaints.filter(
       (comp) =>
         (comp.complaint_no || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
         (comp.customer_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
         (comp.phone || '').includes(searchTerm)
     );
-    setFilteredComplaints(filtered);
-  }, [searchTerm, complaints]);
+    // default sort newest first:
+    arr.sort((a, b) => {
+      const ta = new Date(a.created_at || a.createdAt || 0).getTime();
+      const tb = new Date(b.created_at || b.createdAt || 0).getTime();
+      return tb - ta;
+    });
+    console.log(arr, "arr");
+
+    setFilteredComplaints(arr);
+  }, [searchTerm, complaints, services, technicians]);
 
   function sortByCreatedAtDesc(a, b) {
     const ta = a.created_at ? new Date(a.created_at).getTime() : a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -158,11 +176,29 @@ export default function Complaints({
         fetch(`${BASE}/technicians`),
       ]);
       if (!cRes.ok) throw new Error(`Failed to fetch complaints (${cRes.status})`);
-      const [cJson, sJson, tJson] = await Promise.all([cRes.json(), sRes.json(), tRes.json()]);
+            const [cJson, sJson, tJson, pJson, pinJson] = await Promise.all([
+        cRes.json(),
+        sRes.json(),
+        tRes.json(),
+        fetch(`${BASE}/products`).then((r) => r.ok ? r.json() : []),
+        fetch(`${BASE}/pincodes`).then((r) => r.ok ? r.json() : []),
+      ]);
+
       const normalizedComplaints = Array.isArray(cJson) ? cJson.map(normalize).sort(sortByCreatedAtDesc) : [];
       setComplaints(normalizedComplaints);
+
       if (Array.isArray(sJson)) setServices(sJson.map(normalize));
       if (Array.isArray(tJson)) setTechnicians(tJson.map(normalize).filter((t) => t.is_active !== false));
+
+      // products: normalize id field like other lists
+      if (Array.isArray(pJson)) setProducts(pJson.map(normalize));
+      console.log(pJson,"pJson all products");
+      
+      // pincodes are expected to be simple objects { _id, code, label } or similar — store raw list
+      if (Array.isArray(pinJson)) setPincodes(pinJson);
+      console.log(pinJson,"pinJson");
+      
+
     } catch (err) {
       console.error('fetchInitialData', err);
     } finally {
@@ -198,6 +234,54 @@ export default function Complaints({
     const json = await res.json();
     if (json && json.complaint) return normalize(json.complaint);
     return normalize(json);
+  }
+
+  // format ISO -> "YYYY-MM-DD" or "DD MMM YYYY"
+  function formatDate(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '-';
+    return d.toLocaleDateString();
+  }
+
+  // format ISO -> "HH:MM AM/PM"
+  function formatTime(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '-';
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // format ISO -> "YYYY-MM-DD HH:MM"
+  function formatDateTime(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '-';
+    return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  }
+
+  // human readable duration between two ISOs (or between start and now)
+  function formatDuration(startIso, endIso) {
+    if (!startIso) return '-';
+    const start = new Date(startIso);
+    if (Number.isNaN(start.getTime())) return '-';
+    const end = endIso ? new Date(endIso) : new Date();
+    if (Number.isNaN(end.getTime())) return '-';
+
+    let ms = Math.max(0, end - start);
+    const days = Math.floor(ms / (24 * 3600 * 1000));
+    ms -= days * 24 * 3600 * 1000;
+    const hours = Math.floor(ms / (3600 * 1000));
+    ms -= hours * 3600 * 1000;
+    const minutes = Math.floor(ms / (60 * 1000));
+    ms -= minutes * 60 * 1000;
+
+    const parts = [];
+    if (days) parts.push(`${days}d`);
+    if (hours) parts.push(`${hours}h`);
+    if (minutes) parts.push(`${minutes}m`);
+    if (!parts.length) parts.push('0m');
+    return parts.join(' ');
   }
 
   // Upload single file to backend /api/upload and attach to a complaint
@@ -245,11 +329,10 @@ export default function Complaints({
     return json;
   }
 
-  // --- UI helpers to access selected service/technician prices ---
+  // Selected service / technician
   const selectedService = useMemo(() => services.find((s) => String(s.id) === String(formData.service_id)), [services, formData.service_id]);
   const selectedTechnician = useMemo(() => technicians.find((t) => String(t.id) === String(formData.technician_id)), [technicians, formData.technician_id]);
 
-  // When the selected service changes, if override is empty or equals old service price, update it to new service price
   useEffect(() => {
     const svc = services.find((s) => String(s.id) === String(formData.service_id));
     if (!svc) return;
@@ -260,7 +343,7 @@ export default function Complaints({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formData.service_id]);
 
-  // --- UI handlers ---
+  // --- Handlers (create/update flows preserved) ---
   const loadComplaintsFromProps = () => {
     if (Array.isArray(complaintsProp) && complaintsProp.length > 0) {
       setComplaints(complaintsProp.map(normalize).sort(sortByCreatedAtDesc));
@@ -299,7 +382,7 @@ export default function Complaints({
         const tmpId = genId();
         const complaintData = {
           id: tmpId,
-          complaint_no: genComplaintNo(),
+          complaint_no: "",
           customer_name: formData.customer_name,
           phone: formData.phone,
           phone2: formData.phone2 || '',
@@ -318,12 +401,13 @@ export default function Complaints({
         setComplaints((prev) => [complaintData, ...prev]);
         createdLocal.push(complaintData);
 
-        const payload = {
+                const payload = {
           complaint_no: complaintData.complaint_no,
           customer_name: complaintData.customer_name,
           phone: complaintData.phone,
           phone2: complaintData.phone2,
-          pin_code: complaintData.pin_code,
+          pin_code: formData.pin_code || complaintData.pin_code || '',
+          product_id: formData.product_id || '',
           address: complaintData.address,
           service_id: complaintData.service_id,
           problem_description: complaintData.problem_description,
@@ -331,6 +415,7 @@ export default function Complaints({
           remarks: complaintData.remarks,
           status: complaintData.status,
           missing_parts: complaintData.missing_parts,
+          complaint_type: formData.complaint_type,
         };
 
         try {
@@ -338,7 +423,6 @@ export default function Complaints({
           const toUpload = filesToUpload.slice();
           let uploadedMedia = [];
           if (toUpload.length) {
-            // show uploading UI while creating complaint's media
             setUploading(true);
             uploadedMedia = await uploadFilesForComplaint(created.id || created._id || created.id, toUpload);
             setUploading(false);
@@ -385,26 +469,27 @@ export default function Complaints({
     }
   };
 
-  // When editing: fetch full complaint details (media + missingParts) and populate form + previews
   const handleEdit = async (complaint) => {
     setIsEditMode(true);
     setCurrentStep(1);
     setFilesToUpload([]);
     setUploadError(null);
 
-    // populate basic form state quickly from passed object
-    setFormData({
+        setFormData({
       customer_name: complaint.customer_name || '',
       phone: complaint.phone || '',
       phone2: complaint.phone2 || '',
-      pin_code: complaint.pin_code || complaint.pinCode || '',
+      pin_code: complaint.pin_code ?? complaint.pinCode ?? '',
+      product_id: complaint.product_id || complaint.product || '',
       address: complaint.address || '',
       service_id: complaint.service_id || complaint.service || '',
       problem_description: complaint.problem_description || complaint.problem || '',
       technician_id: complaint.technician_id || complaint.technician || '',
       remarks: complaint.remarks || '',
       status: complaint.status || 'open',
+      complaint_type: complaint.complaint_type ?? 'OW',
     });
+
 
     setIsModalOpen(true);
     setEditingComplaint(complaint);
@@ -435,7 +520,6 @@ export default function Complaints({
         setEditingComplaint(c);
         setFormData((prev) => ({ ...prev, service_id: c.service_id || prev.service_id, technician_id: c.technician_id || prev.technician_id }));
 
-        // initialize technicianPriceOverride:
         const svc = services.find((s) => String(s.id) === String(c.service_id));
         const initial = c.technician_price_charged != null ? String(c.technician_price_charged) : (svc?.technician_price ?? '');
         setTechnicianPriceOverride(initial != null ? String(initial) : '');
@@ -448,7 +532,6 @@ export default function Complaints({
     }
   };
 
-  // Update complaint (edit flow)
   const handleUpdateComplaint = async () => {
     if (!editingComplaint) return;
     setLoading(true);
@@ -477,8 +560,11 @@ export default function Complaints({
       // payload
       const payload = {
         ...formData,
+        product_id: formData.product_id || '',
+        pin_code: formData.pin_code || '',
         service_id: formData.service_id,
         technician_id: formData.technician_id,
+        complaint_type: formData.complaint_type,
         missing_parts: missingParts.filter((p) => p.brand || p.model || p.part_name),
         complaint_media,
       };
@@ -509,7 +595,6 @@ export default function Complaints({
     }
   };
 
-  // Remove image at index (from both previews & urls)
   const removeImageAt = (idx) => {
     setMediaPreviews((prev) => {
       const imgs = prev.images.slice();
@@ -530,7 +615,6 @@ export default function Complaints({
     setFilesToUpload((prev) => prev.filter((f) => !f.type.startsWith('video/')));
   };
 
-  // files selected locally
   const handleFilesSelectedLocal = (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
@@ -571,7 +655,6 @@ export default function Complaints({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // WhatsApp
   const sendWhatsAppMessage = (complaint, manualText = '') => {
     const svcName = services.find((s) => String(s.id) === String(complaint.service_id))?.name || '';
     const statusText = complaint.status || '';
@@ -585,7 +668,6 @@ export default function Complaints({
     window.open(url, '_blank');
   };
 
-  // Reset form (after create/update)
   const resetForm = () => {
     setFormData({
       customer_name: '',
@@ -636,7 +718,7 @@ export default function Complaints({
     setApplyPriceToService(false);
   };
 
-  // Export CSV
+  // Export CSV (kept as a simple button to trigger CSV download of current filtered rows)
   const exportToExcel = () => {
     const headers = ['Complaint No', 'Customer', 'Phone', 'Service', 'Technician', 'Status', 'Date'];
     const rows = filteredComplaints.map((c) => [
@@ -661,8 +743,26 @@ export default function Complaints({
     a.download = 'complaints.csv';
     a.click();
   };
+  function safeGetRowValue(row, possiblePaths, fallback = '-') {
+    if (!row || typeof row !== 'object') return fallback;
+    for (const path of possiblePaths) {
+      if (!path) continue;
+      // support dot-paths like "customer.address"
+      const parts = String(path).split('.');
+      let cur = row;
+      let found = true;
+      for (const p of parts) {
+        if (cur == null) { found = false; break; }
+        // allow numeric-index access if present
+        cur = cur[p];
+      }
+      if (cur !== undefined && cur !== null && cur !== '') {
+        return cur;
+      }
+    }
+    return fallback;
+  }
 
-  // Change complaint status
   const changeComplaintStatus = async (id, newStatus) => {
     try {
       const res = await fetch(`${BASE}/complaints/${id}/status`, {
@@ -671,7 +771,6 @@ export default function Complaints({
         body: JSON.stringify({ status: newStatus }),
       });
       if (!res.ok) throw new Error('Status change failed');
-      // update UI
       setComplaints((prev) => prev.map((c) => (String(c.id) === String(id) ? { ...c, status: newStatus } : c)));
     } catch (err) {
       console.error('changeComplaintStatus', err);
@@ -679,7 +778,168 @@ export default function Complaints({
     }
   };
 
-  // --- Render ---
+  // --- DataGrid columns ---
+  // --- Safe columns (replace your existing `columns` definition) ---
+  const columns = useMemo(() => [
+    { field: 'complaint_no', headerName: 'Comp No.', width: 160 },
+
+    { field: 'customer_name', headerName: 'Customer', width: 220, flex: 1 },
+
+    { field: 'phone', headerName: 'Phone', width: 130 },
+    { field: 'phone2', headerName: 'Phone 2', width: 130 },
+
+    // flat fields (direct, safe)
+    {
+      field: 'address',
+      headerName: 'Address',
+      width: 300,
+      flex: 1,
+      valueGetter: (params) => {
+        return params ?? '-';
+      },
+    },
+    {
+      field: 'product',
+      headerName: 'Product',
+      width: 220,
+      renderCell: (params) => {
+        const row = params?.row;
+        if (!row) return '-';
+        const id = row.product_id ?? row.product ?? null;
+        if (!id) return '-';
+        if (!Array.isArray(products) || products.length === 0) return id;
+        const prod = products.find((p) => String(p.id) === String(id) || String(p._id) === String(id));
+        if (!prod) return id;
+        const brand = prod.brand_name ?? prod.brand ?? '';
+        const model = prod.model ?? '';
+        return (brand && model) ? `${brand} ${model}` : (brand || model || prod.sku || id);
+      },
+      sortable: false,
+      filterable: true,
+    },
+    {
+      field: 'complaint_type',
+      headerName: 'Type',
+      width: 140,
+      // The rows from API contain "IW" or "OW"; render friendly label & color
+      renderCell: (params) => {
+        const val = params?.value ?? params?.row?.complaint_type ?? 'IW';
+        const label = val === 'IW' ? 'In Warranty' : val === 'OW' ? 'Out Of Warranty' : val;
+        const color = val === 'IW' ? 'success' : 'warning';
+        return <Chip label={label} size="small" color={color} />;
+      },
+      sortable: true,
+      filterable: true,
+    },
+
+    {
+      field: 'pin_code',
+      headerName: 'Pin Code',
+      width: 110,
+      valueGetter: (params) => {
+        return params ?? '-';
+      },
+
+    },
+
+    // use valueFormatter for formatting the raw value (params.value)
+    {
+      field: 'opened_at',
+      headerName: 'Opened At',
+      width: 180,
+      // valueFormatter receives either params.value (primitive) or params (object) depending on grid call
+      valueFormatter: (params) => {
+        // console.log(params);
+        // handle both shapes: if params is a primitive, use it; otherwise use params.value
+        const iso = (params && typeof params === 'object') ? (params.value ?? params?.row?.opened_at ?? '') : params;
+        return formatDateTime(iso);
+      },
+    },
+
+    {
+      field: 'duration',
+      headerName: 'Duration',
+      width: 140,
+      renderCell: (params) => {
+        console.log('params in valueGetter:', params);
+        const row = params?.row;
+        if (!row) return '-';
+        const start = row.opened_at ?? row.createdAt ?? null;
+        if (!start) return '-';
+        const end = row.closed_at ?? null;
+        return formatDuration(start, end);
+      },
+    },
+
+    // show service name (lookup) but guard against missing row or services
+    {
+      field: 'service',
+      headerName: 'Service',
+      width: 200,
+      renderCell: (params) => {
+        const row = params?.row;
+        if (!row) return '-';
+        const id = row.service_id ?? row.service ?? null;
+        if (!id) return '-';
+        if (!Array.isArray(services) || services.length === 0) return id;
+        const svc = services.find((s) => String(s.id) === String(id) || String(s._id) === String(id));
+        return svc?.name ?? id;
+      },
+    },
+
+    // show technician name (lookup)
+    {
+      field: 'technician',
+      headerName: 'Technician',
+      width: 200,
+      renderCell: (params) => {
+        const row = params?.row;
+        if (!row) return '-';
+        const id = row.technician_id ?? row.technician ?? null;
+        if (!id) return '-';
+        if (!Array.isArray(technicians) || technicians.length === 0) return id;
+        const tech = technicians.find((t) => String(t.id) === String(id) || String(t._id) === String(id));
+        return tech?.name ?? id;
+      },
+    },
+
+    {
+      field: 'status',
+      headerName: 'Status',
+      width: 130,
+      renderCell: (params) => {
+        const st = params?.value ?? params?.row?.status ?? 'unknown';
+        let color = 'default';
+        if (st === 'open') color = 'primary';
+        else if (st === 'closed') color = 'success';
+        else if (st === 'cancelled') color = 'error';
+        else color = 'warning';
+        return <Chip label={String(st)} size="small" color={color} />;
+      },
+      sortable: true,
+    },
+
+    {
+      field: 'actions',
+      headerName: 'Actions',
+      width: 140,
+      sortable: false,
+      filterable: false,
+      renderCell: (params) => {
+        const row = params?.row ?? {};
+        return (
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <IconButton size="small" onClick={() => handleEdit(row)} title="Edit">
+              <EditIcon fontSize="small" />
+            </IconButton>
+            <IconButton size="small" onClick={() => sendWhatsAppMessage(row)} title="WhatsApp">
+              <WhatsAppIcon fontSize="small" />
+            </IconButton>
+          </Box>
+        );
+      },
+    },
+  ], [services, technicians, products]); // keep dependencies accurate
   return (
     <div>
       <div className="flex items-center justify-between mb-8">
@@ -708,73 +968,36 @@ export default function Complaints({
               className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
-          <button onClick={exportToExcel} className="flex items-center gap-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors">
-            <Download size={20} />
-            Export Excel
-          </button>
+          <div className="flex gap-2">
+            <button onClick={exportToExcel} className="flex items-center gap-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors">
+              <Download size={20} />
+              Export Excel
+            </button>
+          </div>
         </div>
         {loading && <p className="text-sm text-gray-500 mt-2">Loading...</p>}
       </div>
 
-      <div className="bg-white rounded-xl shadow-md overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50 border-b border-gray-200">
-            <tr>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Comp No.</th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Customer</th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Phone</th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Service</th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Technician</th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Status</th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Date</th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {filteredComplaints.map((complaint) => (
-              <tr key={complaint.id} className="hover:bg-gray-50 transition-colors">
-                <td className="px-6 py-4 text-sm font-medium text-gray-900">{complaint.complaint_no}</td>
-                <td className="px-6 py-4 text-sm text-gray-600">{complaint.customer_name}</td>
-                <td className="px-6 py-4 text-sm text-gray-600">{complaint.phone}</td>
-                <td className="px-6 py-4 text-sm text-gray-600">
-                  {services.find((s) => String(s.id) === String(complaint.service_id))?.name || '-'}
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-600">
-                  {technicians.find((t) => String(t.id) === String(complaint.technician_id))?.name || '-'}
-                </td>
-                <td className="px-6 py-4">
-                  <select
-                    value={complaint.status || 'open'}
-                    onChange={(e) => changeComplaintStatus(complaint.id || complaint._id || complaint.id, e.target.value)}
-                    className="px-2 py-1 border rounded"
-                  >
-                    <option value="open">Open</option>
-                    <option value="closed">Closed</option>
-                    <option value="cancelled">Cancelled</option>
-                    <option value="pending_parts">Pending Parts</option>
-                  </select>
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-600">
-                  {complaint.created_at ? new Date(complaint.created_at).toLocaleDateString() : complaint.createdAt ? new Date(complaint.createdAt).toLocaleDateString() : '-'}
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => handleEdit(complaint)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
-                      <Edit2 size={18} />
-                    </button>
-                    <button onClick={() => sendWhatsAppMessage(complaint)} title="Send WhatsApp message" className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors">
-                      <MessageCircle size={18} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {filteredComplaints.length === 0 && <div className="text-center py-12 text-gray-500">No complaints found</div>}
+      <div className="bg-white rounded-xl shadow-md overflow-hidden p-4">
+        {/* DataGrid wrapper */}
+        <div style={{ height: 600, width: '100%' }}>
+          <DataGrid
+            rows={filteredComplaints || []}
+            columns={columns}
+            getRowId={(row) => row.id ?? row._id}
+            pageSize={10}
+            rowsPerPageOptions={[5, 10, 25, 50]}
+            pagination
+            components={{ Toolbar: GridToolbar }}
+            disableSelectionOnClick
+            onRowDoubleClick={(params) => handleEdit(params.row)}
+          />
+        </div>
+
+        {filteredComplaints.length === 0 && !loading && <div className="text-center py-12 text-gray-500">No complaints found</div>}
       </div>
 
-      {/* Modal */}
+      {/* Reuse your existing Modal flows (unchanged) */}
       <Modal isOpen={isModalOpen} onClose={resetForm} title={isEditMode ? 'Edit Complaint' : 'Register New Complaint'} size="xl">
         {/* Overlay shown only when uploading */}
         {uploading && (
@@ -799,7 +1022,7 @@ export default function Complaints({
         )}
 
         {!isEditMode ? (
-          // Create flow (2 steps) — identical to your existing UI
+          // Create flow (2 steps)
           <div>
             <div className="flex mb-6 border-b">
               <button className={`flex-1 pb-3 ${currentStep === 1 ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500'}`}>
@@ -845,15 +1068,22 @@ export default function Complaints({
                   </div>
                 </div>
 
-                <div>
+                                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Pin Code</label>
-                  <input
-                    type="text"
+                  <select
                     value={formData.pin_code}
                     onChange={(e) => setFormData({ ...formData, pin_code: e.target.value })}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
+                  >
+                    <option value="">Select Pin Code</option>
+                   {pincodes.map((p) => (
+  <option key={p._id} value={p._id}>
+    {p.name ?? "Unknown"}
+  </option>
+))}
+                  </select>
                 </div>
+
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Address *</label>
@@ -922,6 +1152,24 @@ export default function Complaints({
                     </div>
                   </div>
                 )}
+                <div className="mt-3">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Product (Brand / Model)</label>
+                  <select
+                    value={formData.product_id}
+                    onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="">Select a product</option>
+                    {products.map((prod) => {
+                      const id = prod.id ?? prod._id;
+                      const brand = prod.brand_name ?? prod.brand ?? '';
+                      const model = prod.model ?? prod.product_model ?? '';
+                      const label = brand && model ? `${brand} - ${model}` : brand || model || prod.sku || id;
+                      return <option key={id} value={id}>{label}</option>;
+                    })}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">Select product related to this complaint (optional).</p>
+                </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Problem Description</label>
@@ -949,6 +1197,23 @@ export default function Complaints({
                     ))}
                   </select>
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Complaint Type *</label>
+
+                  <select
+                    required
+                    value={formData.complaint_type}
+                    onChange={(e) => setFormData({ ...formData, complaint_type: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="">Select Option</option>
+                    <option value="IW">In Warranty (IW)</option>
+                    <option value="OW">Out Of Warranty (OW)</option>
+                  </select>
+
+                  <p className="text-xs text-gray-500 mt-1">Choose whether the complaint is In-Warranty or Out-Of-Warranty.</p>
+                </div>
+                
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Remarks</label>
@@ -972,7 +1237,7 @@ export default function Complaints({
             )}
           </div>
         ) : (
-          // Edit flow (4 steps)
+          // Edit flow (same as before)
           <div className="relative">
             <div className="flex mb-6 border-b">
               <button className={`flex-1 pb-3 text-sm ${currentStep === 1 ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500'}`} onClick={() => setCurrentStep(1)}>
@@ -1042,6 +1307,22 @@ export default function Complaints({
                   <textarea value={formData.problem_description} onChange={(e) => setFormData({ ...formData, problem_description: e.target.value })} rows={3} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Complaint Type *</label>
+
+                  <select
+                    required
+                    value={formData.complaint_type}
+                    onChange={(e) => setFormData({ ...formData, complaint_type: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="IW">In Warranty (IW)</option>
+                    <option value="OW">Out Of Warranty (OW)</option>
+                  </select>
+
+                  <p className="text-xs text-gray-500 mt-1">Choose whether the complaint is In-Warranty or Out-Of-Warranty.</p>
+                </div>
+
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Assign Technician *</label>
                   <select required value={formData.technician_id} onChange={(e) => setFormData({ ...formData, technician_id: e.target.value })} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                     <option value="">Select a technician</option>
@@ -1067,8 +1348,6 @@ export default function Complaints({
                       />
                       <div className="text-xs text-gray-500 mt-1">Enter price you want to charge this technician for this complaint.</div>
                     </div>
-
-                    
                   </div>
                 </div>
                 <div>

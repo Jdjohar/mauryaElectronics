@@ -18,15 +18,116 @@ const Complaint = require('../models/Complaint');
 const MissingPart = require('../models/MissingPart');
 const ComplaintMedia = require('../models/ComplaintMedia');
 const TechnicianService = require('../models/TechnicianService');
-
+const Counter = require('../models/Counter');
+const { body, validationResult } = require('express-validator');
+const authRoutes = require('../middleware/auth');
+const { verifyToken, requireRole } = require('../middleware/auth');
+const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
 // Multer setup for handling multipart/form-data
 const upload = multer();
 
 // --------- Utilities ----------
-function safeParseInt(v, fallback = 0) {
-  const n = parseInt(v);
-  return Number.isNaN(n) ? fallback : n;
+router.use('/auth', authRoutes);
+require('dotenv').config();
+const JWT_SECRET = process.env.JWT_SECRET || 'change_this_now';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
+
+// Basic login rate limiter
+const loginLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 6,              // allow 6 requests per minute per IP
+  message: { error: 'Too many login attempts, please wait a moment.' },
+});
+
+// helper: create token payload
+function createAccessToken(user) {
+  const payload = {
+    sub: user._id.toString(),
+    role: user.role,
+    name: user.name,
+    email: user.email,
+  };
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
+
+router.post('/signup-admin', async (req, res) => {
+  try {
+    const { name, email, phone, password } = req.body;
+
+    if (!name || !email || !phone || !password) {
+      return res.status(400).json({ error: "name, email, phone, password are required" });
+    }
+
+    // check if admin already exists
+    const existingAdmin = await User.findOne({ role: "admin" });
+    if (existingAdmin) {
+      return res.status(403).json({
+        error: "Admin already exists. Remove this route from your server."
+      });
+    }
+
+    const newUser = new User({
+      name,
+      email: email.toLowerCase(),
+      phone,
+      password,
+      role: "admin",
+      is_active: true
+    });
+
+    await newUser.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Admin account created successfully",
+      user: newUser.toJSON()
+    });
+
+  } catch (err) {
+    console.error("signup-admin error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+router.post('/login', loginLimiter, async (req, res) => {
+  try {
+    const { identifier, email, phone, password } = req.body;
+    if (!password || (!identifier && !email && !phone)) {
+      return res.status(400).json({ error: 'identifier (email/phone) and password are required' });
+    }
+
+    let user = null;
+    if (identifier) {
+      // try email first then phone
+      if (identifier.includes('@')) user = await User.findOne({ email: identifier.toLowerCase() });
+      else user = await User.findOne({ phone: identifier });
+    } else if (email) {
+      user = await User.findOne({ email: email.toLowerCase() });
+    } else if (phone) {
+      user = await User.findOne({ phone });
+    }
+
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    if (!user.is_active) return res.status(403).json({ error: 'User is disabled' });
+
+    const match = await user.comparePassword(password);
+    if (!match) return res.status(401).json({ error: 'Invalid credentials' });
+
+    const token = createAccessToken(user);
+
+    // You can decide to return refresh token here as well (not implemented by default)
+    return res.json({
+      success: true,
+      token,
+      expiresIn: JWT_EXPIRES_IN,
+      user: user.toJSON(), // toJSON removes password per your model
+    });
+  } catch (err) {
+    console.error('auth:login', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 
 cloudinary.config({
@@ -34,13 +135,7 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-function pickResourceType(mimetype, explicitType) {
-  if (explicitType) return explicitType; // allow override from request
-  if (!mimetype) return 'auto';
-  if (mimetype.startsWith('video/')) return 'auto'; // upload videos as auto
-  if (mimetype.startsWith('image/')) return 'image';
-  return 'auto';
-}
+
 
 // helper: upload buffer to cloudinary (unchanged)
 async function uploadBufferToCloudinary(buffer, folder = 'complaint_media', resource_type = 'auto') {
@@ -108,51 +203,286 @@ router.delete('/users/:id', async (req, res) => {
 // -----------------------------
 // EMPLOYEES
 // -----------------------------
-router.post('/employees', async (req, res) => {
+async function createUserForEmployee({ email, phone, name, password, role = 'employee' }) {
+  // validation already done outside
+  const payload = {
+    name: name || (email ? email.split('@')[0] : 'Employee'),
+    email: email ? String(email).toLowerCase() : '',
+    phone: phone || '',
+    password: password || Math.random().toString(36).slice(-8), // fallback random pwd (prefer explicit)
+    role,
+    is_active: true,
+  };
+
+  // don't allow duplicate email
+  if (payload.email) {
+    const exists = await User.findOne({ email: payload.email });
+    if (exists) throw new Error('User with this email already exists');
+  }
+
+  const user = new User(payload);
+  await user.save();
+
+  const safe = user.toObject();
+  delete safe.password;
+  return safe;
+}
+
+/**
+ * POST /employees
+ * Admin-only: create employee record. Optionally create a User and link (pass createUser=true).
+ *
+ * Body example:
+ * {
+ *   "name":"Ramesh",
+ *   "phone":"9876543210",
+ *   "email":"ramesh@example.com",
+ *   "address":"xyz",
+ *   "createUser": true,
+ *   "userPassword": "secret123" // optional but recommended if createUser true
+ * }
+ */
+router.post(
+  '/employees',
+  verifyToken,
+  requireRole(['admin']),
+  [
+    body('name').notEmpty().withMessage('Name is required'),
+    body('email').optional().isEmail().withMessage('Email invalid'),
+    body('phone').optional().isString(),
+    body('createUser').optional().isBoolean(),
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+      const { name, phone, email, address, createUser, userPassword, meta } = req.body;
+
+      let userRef = null;
+      if (createUser) {
+        // create linked user (role = employee)
+        try {
+          const createdUser = await createUserForEmployee({
+            email,
+            phone,
+            name,
+            password: userPassword,
+            role: 'employee',
+          });
+          userRef = createdUser._id;
+        } catch (err) {
+          return res.status(400).json({ error: err.message });
+        }
+      }
+
+      const emp = new Employee({
+        name,
+        phone: phone || '',
+        email: email ? String(email).toLowerCase() : '',
+        address: address || '',
+        user_ref: userRef,
+        meta: meta || {},
+      });
+
+      await emp.save();
+      // return populated user_ref if present
+      const out = await Employee.findById(emp._id).populate('user_ref', '-password').lean();
+      res.json({ success: true, employee: out });
+    } catch (err) {
+      console.error('employees:create', err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+/**
+ * GET /employees
+ * Admin: list all employees
+ * Employee: return only their own employee record (if linked), otherwise empty
+ */
+router.get('/employees', verifyToken, async (req, res) => {
   try {
-    const emp = new Employee(req.body);
-    await emp.save();
-    res.json({ success: true, employee: emp });
+    if (req.user.role === 'admin') {
+      const list = await Employee.find().sort({ createdAt: -1 }).populate('user_ref', '-password').lean();
+      return res.json(list);
+    }
+
+    // For employees, return only the employee record linked to their user account
+    if (req.user.role === 'employee') {
+      const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
+      return res.json(emp ? [emp] : []);
+    }
+
+    // other roles (customer etc.) not allowed
+    return res.status(403).json({ error: 'Forbidden' });
   } catch (err) {
+    console.error('employees:list', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-router.get('/employees', async (req, res) => {
+/**
+ * GET /employees/me
+ * return the employee record linked to current logged-in user
+ */
+router.get('/employees/me', verifyToken, async (req, res) => {
   try {
-    const list = await Employee.find().sort({ createdAt: -1 });
-    res.json(list);
+    // only useful for employees who have user_ref. Admins may not have employee record.
+    const emp = await Employee.findOne({ user_ref: req.user._id }).populate('user_ref', '-password').lean();
+    if (!emp) return res.status(404).json({ error: 'Employee record not found for this user' });
+    res.json(emp);
   } catch (err) {
+    console.error('employees:me', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-router.get('/employees/:id', async (req, res) => {
+/**
+ * GET /employees/:id
+ * Admin: can fetch any
+ * Employee: can fetch only their own record
+ */
+router.get('/employees/:id', verifyToken, async (req, res) => {
   try {
-    const e = await Employee.findById(req.params.id);
-    res.json(e || {});
+    const id = req.params.id;
+    const emp = await Employee.findById(id).populate('user_ref', '-password').lean();
+    if (!emp) return res.json({}); // keep current behaviour
+
+    if (req.user.role === 'admin') return res.json(emp);
+
+    if (req.user.role === 'employee') {
+      // allow only if this employee is linked to current user
+      if (String(emp.user_ref?._id) === String(req.user._id)) return res.json(emp);
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    return res.status(403).json({ error: 'Forbidden' });
   } catch (err) {
+    console.error('employees:get', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-router.put('/employees/:id', async (req, res) => {
-  try {
-    const upd = await Employee.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    res.json(upd);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+/**
+ * PUT /employees/:id
+ * Admin: update any
+ * Employee: update their own record (but not user role/password via this endpoint)
+ *
+ * If admin wants to update linked user fields (email/phone), they should use User routes.
+ */
+router.put(
+  '/employees/:id',
+  verifyToken,
+  [
+    body('email').optional().isEmail().withMessage('Invalid email'),
+    body('phone').optional().isString(),
+    body('name').optional().notEmpty(),
+  ],
+  async (req, res) => {
+    try {
+      const id = req.params.id;
+      const emp = await Employee.findById(id);
+      if (!emp) return res.status(404).json({ error: 'Employee not found' });
 
-router.delete('/employees/:id', async (req, res) => {
+      if (req.user.role === 'admin') {
+        // admin may update all fields
+      } else if (req.user.role === 'employee') {
+        // only allow if this employee linked to current user
+        if (String(emp.user_ref ?? '') !== String(req.user._id)) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+        // restrict fields employees may update: name, phone, address, meta, is_active? (no)
+        const allowed = ['name', 'phone', 'address', 'meta'];
+        const payload = {};
+        for (const k of allowed) if (req.body[k] !== undefined) payload[k] = req.body[k];
+        Object.assign(emp, payload);
+        await emp.save();
+        const out = await Employee.findById(emp._id).populate('user_ref', '-password').lean();
+        return res.json(out);
+      } else {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      // admin update path
+      const updateBody = { ...req.body };
+      // protect user_ref updates from accidental overwrite unless admin intended
+      if (updateBody.user_ref === undefined) delete updateBody.user_ref;
+      const updated = await Employee.findByIdAndUpdate(id, updateBody, { new: true }).populate('user_ref', '-password').lean();
+      res.json(updated);
+    } catch (err) {
+      console.error('employees:update', err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+/**
+ * DELETE /employees/:id
+ * Admin only
+ */
+router.delete('/employees/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     await Employee.findByIdAndDelete(req.params.id);
     res.json({ success: true });
   } catch (err) {
+    console.error('employees:delete', err);
     res.status(500).json({ error: err.message });
   }
 });
+
+
+
+
+
+// -----------------------------
+// EMPLOYEES
+// -----------------------------
+// router.post('/employees', async (req, res) => {
+//   try {
+//     const emp = new Employee(req.body);
+//     await emp.save();
+//     res.json({ success: true, employee: emp });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+// router.get('/employees', async (req, res) => {
+//   try {
+//     const list = await Employee.find().sort({ createdAt: -1 });
+//     res.json(list);
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+// router.get('/employees/:id', async (req, res) => {
+//   try {
+//     const e = await Employee.findById(req.params.id);
+//     res.json(e || {});
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+// router.put('/employees/:id', async (req, res) => {
+//   try {
+//     const upd = await Employee.findByIdAndUpdate(req.params.id, req.body, { new: true });
+//     res.json(upd);
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+// router.delete('/employees/:id', async (req, res) => {
+//   try {
+//     await Employee.findByIdAndDelete(req.params.id);
+//     res.json({ success: true });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 
 // -----------------------------
 // TECHNICIANS
@@ -354,130 +684,129 @@ router.delete('/pincodes/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// pad helper
+function pad(n, len = 2) { return String(n).padStart(len, '0'); }
 
-// -----------------------------
-// COMPLAINTS
-// - Tracks opened_at, closed_at, time_to_close (ms), and events array
-// - Supports multi service registration (queued in frontend), missingParts & media
-// -----------------------------
+// format date base YYYYMMDD
+function makeDateBase(date = new Date()) {
+  const YYYY = date.getFullYear();
+  const MM = pad(date.getMonth() + 1, 2);
+  const DD = pad(date.getDate(), 2);
+  return `${YYYY}${MM}${DD}`;
+}
+
 /**
- Complaint doc expected basic structure (adapt to your model):
- {
-   complaint_no: String,
-   customer_name: String,
-   phone: String,
-   phone2: String,
-   pin_code: String,
-   address: String,
-   service_id: ObjectId,
-   problem_description: String,
-   technician_id: ObjectId,
-   remarks: String,
-   status: String, // open/closed/cancelled/pending_parts
-   opened_at: Date,
-   closed_at: Date,
-   time_to_close: Number (ms),
-   events: [{ status, changed_by (userId or name), at: Date, note }]
- }
-**/
+ * Atomically allocate a single sequence for the day and return complaint_no
+ * Example: MK-20251107-0001 (padLength default 4)
+ */
+async function generateComplaintNoPerDay({ date = new Date(), prefix = 'MK', padLength = 4 } = {}) {
+  const base = makeDateBase(date);
+  const key = `complaint_seq_${base}`;
 
-// Create complaint (single)
-// router.post('/complaints', async (req, res) => {
-//   try {
-//     const payload = { ...req.body };
-//     // If not provided, set status and opened_at
-//     if (!payload.status) payload.status = 'open';
-//     if (!payload.opened_at) payload.opened_at = new Date();
+  const updated = await Counter.findOneAndUpdate(
+    { _id: key },
+    { $inc: { seq: 1 } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  ).lean().exec();
 
-//     const complaint = new Complaint(payload);
-//     await complaint.save();
+  const seq = (updated && updated.seq) ? updated.seq : 1;
+  const seqStr = padLength > 0 ? String(seq).padStart(padLength, '0') : String(seq);
+  return `${prefix}-${base}-${seqStr}`;
+}
 
-//     // Save missing parts if provided
-//     if (req.body.missingParts && Array.isArray(req.body.missingParts)) {
-//       const parts = req.body.missingParts
-//         .filter((p) => p.brand && p.model && p.part_name)
-//         .map((p) => ({ complaint_id: complaint._id, ...p }));
-//       if (parts.length) await MissingPart.insertMany(parts);
-//     }
+/**
+ * Atomically allocate a contiguous block of sequences for the day.
+ * Returns an array of complaint numbers in ascending order.
+ * Example output: ['MK-20251107-0001','MK-20251107-0002',...]
+ */
+async function allocateComplaintNumbersPerDay(count, { date = new Date(), prefix = 'MK', padLength = 4 } = {}) {
+  if (!Number.isInteger(count) || count <= 0) throw new Error('count must be positive integer');
 
-//     res.json({ success: true, complaint });
-//   } catch (err) {
-//     console.error('complaints:create', err);
-//     res.status(500).json({ success: false, error: err.message });
-//   }
-// });
+  const base = makeDateBase(date);
+  const key = `complaint_seq_${base}`;
 
-// assume you already use express.json() so req.body is available
-// router.post('/complaints', async (req, res) => {
-//   try {
-//     const payload = req.body;
+  const updated = await Counter.findOneAndUpdate(
+    { _id: key },
+    { $inc: { seq: count } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  ).lean().exec();
 
-//     // Map fields expected by your Complaint mongoose model - adapt names if different
-//     // e.g. payload.service or payload.service_id depending on your schema
-//     const complaintDoc = new Complaint({
-//       complaint_no: payload.complaint_no,
-//       customer_name: payload.customer_name,
-//       phone: payload.phone,
-//       phone2: payload.phone2,
-//       pin_code: payload.pin_code,
-//       address: payload.address,
-//       // accept either `service` or `service_id`
-//       service: payload.service || payload.service_id,
-//       problem_description: payload.problem_description,
-//       technician: payload.technician || payload.technician_id,
-//       remarks: payload.remarks,
-//       status: payload.status || 'open',
-//       created_at: payload.created_at || new Date(),
-//       // any other fields...
-//     });
+  const endSeq = (updated && updated.seq) ? updated.seq : count;
+  const startSeq = endSeq - count + 1;
 
-//     const saved = await complaintDoc.save();
+  // debug log (helps trace allocation)
+  console.log(`Allocated counter key=${key} start=${startSeq} end=${endSeq}`);
 
-//     // if client passed complaint_media as an array of { media_type, media_url }
-//     if (Array.isArray(payload.complaint_media) && payload.complaint_media.length > 0) {
-//       const toInsert = payload.complaint_media.map((m) => ({
-//         complaint_id: saved._id,
-//         media_type: m.media_type || (m.media_url && m.media_url.includes('.mp4') ? 'video' : 'image'),
-//         media_url: m.media_url,
-//         provider_response: m.provider_response || null,
-//       }));
-//       // Insert many at once
-//       await ComplaintMedia.insertMany(toInsert);
-//     }
+  const arr = [];
+  for (let s = startSeq; s <= endSeq; s++) {
+    const seqStr = padLength > 0 ? String(s).padStart(padLength, '0') : String(s);
+    arr.push(`${prefix}-${base}-${seqStr}`);
+  }
+  return arr;
+}
 
-//     // missing_parts array saved similarly (if you have model MissingPart)
-//     if (Array.isArray(payload.missing_parts) && payload.missing_parts.length > 0) {
-//       const partsInsert = payload.missing_parts.map((p) => ({
-//         complaint_id: saved._id,
-//         brand: p.brand || '',
-//         model: p.model || '',
-//         part_name: p.part_name || '',
-//       }));
-//       await MissingPart.insertMany(partsInsert);
-//     }
+/**
+ * Retry helper for duplicate key errors (E11000)
+ */
+async function retryOnDuplicateKey(fn, { retries = 3, delayMs = 50 } = {}) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err && err.code === 11000 && attempt < retries) {
+        attempt++;
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
 
-//     // Optionally fetch and attach the saved media & parts to return
-//     const savedMedia = await ComplaintMedia.find({ complaint_id: saved._id }).lean();
-//     const savedParts = await MissingPart.find({ complaint_id: saved._id }).lean();
+// Coerce various shapes of media objects into a single media doc
+function normalizeMediaDocs(complaintId, complaint_media = []) {
+  if (!Array.isArray(complaint_media)) return [];
+  return complaint_media.map((m) => {
+    if (!m) return null;
+    let mediaUrl = '';
+    if (typeof m.media_url === 'string') mediaUrl = m.media_url;
+    else if (m.provider_response && (m.provider_response.secure_url || m.provider_response.url)) {
+      mediaUrl = m.provider_response.secure_url || m.provider_response.url;
+    } else if (m.result && (m.result.secure_url || m.result.url)) {
+      mediaUrl = m.result.secure_url || m.result.url;
+    } else if (m.secure_url) mediaUrl = m.secure_url;
+    else if (m.url) mediaUrl = m.url;
+    if (!mediaUrl) return null;
+    const guessedType = m.media_type || (String(mediaUrl).toLowerCase().includes('.mp4') ? 'video' : 'image');
+    return {
+      complaint: complaintId,
+      media_type: guessedType,
+      media_url: mediaUrl,
+      provider_response: m.provider_response || null,
+    };
+  }).filter(Boolean);
+}
 
-//     const responsePayload = {
-//       ...saved.toObject(),
-//       complaint_media: savedMedia,
-//       missing_parts: savedParts,
-//     };
+// Normalize missing parts list
+function normalizePartsDocs(complaintId, missing_parts = []) {
+  if (!Array.isArray(missing_parts)) return [];
+  return missing_parts.map((p) => ({
+    complaint: complaintId,
+    brand: p.brand || '',
+    model: p.model || '',
+    part_name: p.part_name || '',
+    qty: p.qty || 1,
+  })).filter(x => x.part_name);
+}
 
-//     res.status(201).json(responsePayload);
-//   } catch (err) {
-//     console.error('complaints:create', err);
-//     res.status(500).json({ error: err.message || String(err) });
-//   }
-// });
+// ---------- Routes ----------
 
-// Replace existing /complaints POST handler with this (api.js)
-// --- create complaint (improved, tolerant to service/service_id and technician/technician_id) ---
-router.post('/complaints', async (req, res) => {
+/**
+ * POST /complaints - create single complaint
+ */
+router.post('/complaints', verifyToken, requireRole(['admin','employee']), async (req, res) => {
   try {
-    // Accept both `service_id` or `service`, and both `technician_id` or `technician`
     const {
       complaint_no,
       customer_name,
@@ -487,132 +816,161 @@ router.post('/complaints', async (req, res) => {
       address,
       service_id,
       service,
+      complaint_type,
       problem_description,
       technician_id,
       technician,
       remarks,
       status,
-      complaint_media, // optional array: [{ media_type, media_url, provider_response }]
-      missing_parts,   // optional array
+      complaint_media,
+      missing_parts,
     } = req.body;
 
-    // Normalize
     const theServiceId = service_id || service || null;
     const theTechnicianId = technician_id || technician || null;
 
-    // Validate required fields (adjust messages as you like)
     if (!theServiceId) return res.status(400).json({ error: 'service_id (or service) is required' });
     if (!theTechnicianId) return res.status(400).json({ error: 'technician_id (or technician) is required' });
+    if (!customer_name) return res.status(400).json({ error: 'customer_name is required' });
+    if (!phone) return res.status(400).json({ error: 'phone is required' });
+    if (!address) return res.status(400).json({ error: 'address is required' });
 
-    // Build complaint document
+    // generate complaint number if not provided
+    const complaintNo = complaint_no || await generateComplaintNoPerDay({ prefix: 'MK', padLength: 4 });
+
     const complaintDoc = new Complaint({
-      complaint_no: complaint_no || `CMP-${Date.now()}`,
+      complaint_no: complaintNo,
       customer_name,
       phone,
-      phone2,
-      pin_code,
+      phone2: phone2 || '',
+      pin_code: pin_code || '',
       address,
       service_id: theServiceId,
-      problem_description,
+      complaint_type: complaint_type,
+      problem_description: problem_description || '',
       technician_id: theTechnicianId,
-      remarks,
+      remarks: remarks || '',
       status: status || 'open',
+      created_by: req.user ? req.user._id : null,
       created_at: new Date(),
     });
 
-    const saved = await complaintDoc.save();
-
-    // ---- Save complaint_media as separate ComplaintMedia docs (if provided) ----
-    // Ensure we save only strings into media_url (not whole objects)
+    // save with retry on duplicate key (safe guard)
+    const saved = await retryOnDuplicateKey(() => complaintDoc.save());
+    // insert media and parts (parallel is fine here because complaint exists)
     let savedMedia = [];
-    if (Array.isArray(complaint_media) && complaint_media.length > 0) {
-      const mediaDocs = complaint_media.map((m) => {
-        // m.media_url could be an object (provider result) — coerce to secure_url if present
-        let mediaUrl = '';
-        if (!m) mediaUrl = '';
-        else if (typeof m.media_url === 'string') mediaUrl = m.media_url;
-        else if (m.provider_response && (m.provider_response.secure_url || m.provider_response.url)) {
-          mediaUrl = m.provider_response.secure_url || m.provider_response.url;
-        } else if (m.result && (m.result.secure_url || m.result.url)) {
-          mediaUrl = m.result.secure_url || m.result.url;
-        } else if (m.secure_url) {
-          mediaUrl = m.secure_url;
-        } else if (m.url) {
-          mediaUrl = m.url;
-        }
-
-        return {
-          complaint: saved._id, // IMPORTANT: use `complaint` field expected by schema
-          media_type: m.media_type || (String(mediaUrl).toLowerCase().includes('.mp4') ? 'video' : 'image'),
-          media_url: mediaUrl,
-          provider_response: m.provider_response || null,
-        };
-      }).filter((d) => d.media_url); // only insert ones with a URL
-
-      if (mediaDocs.length > 0) {
-        // insertMany returns created docs
-        savedMedia = await ComplaintMedia.insertMany(mediaDocs);
-      }
-    }
-
-    // ---- Save missing parts into MissingPart collection (if provided) ----
     let savedParts = [];
-    if (Array.isArray(missing_parts) && missing_parts.length > 0) {
-      const partsDocs = missing_parts.map((p) => ({
-        complaint: saved._id, // IMPORTANT: use `complaint` (not complaint_id) if your schema expects 'complaint'
-        brand: p.brand || '',
-        model: p.model || '',
-        part_name: p.part_name || '',
-      }));
-      if (partsDocs.length > 0) {
-        savedParts = await MissingPart.insertMany(partsDocs);
-      }
-    }
 
-    // Return created complaint + related arrays (so frontend can show previews immediately)
-    // Optionally populate service/technician if desired
+    const mediaDocs = normalizeMediaDocs(saved._id, complaint_media);
+    if (mediaDocs.length) savedMedia = await ComplaintMedia.insertMany(mediaDocs);
+
+    const partDocs = normalizePartsDocs(saved._id, missing_parts);
+    if (partDocs.length) savedParts = await MissingPart.insertMany(partDocs);
+
     const populated = await Complaint.findById(saved._id).lean();
-
-    // Return shape similar to your GET /complaints/:id (complaint + media + missingParts)
-    const mediaForResponse = savedMedia.length > 0 ? savedMedia : [];
-    const partsForResponse = savedParts.length > 0 ? savedParts : [];
-
-    return res.status(201).json({
-      complaint: populated || saved,
-      media: mediaForResponse,
-      missingParts: partsForResponse,
-    });
+    return res.status(201).json({ complaint: populated || saved, media: savedMedia, missingParts: savedParts });
   } catch (err) {
     console.error('complaints:create', err);
+    if (err && err.code === 11000 && err.keyPattern && err.keyPattern.complaint_no) {
+      return res.status(409).json({ error: 'Duplicate complaint_no (retry)' });
+    }
     if (err.name === 'ValidationError') {
       return res.status(400).json({ error: 'ValidationError', details: err.errors });
     }
     return res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
-// Create multiple complaints for multi-service mode
+
+
 router.post('/complaints/batch', async (req, res) => {
   try {
-    const { complaints = [] } = req.body; // array of complaint payloads
-    if (!Array.isArray(complaints) || !complaints.length) {
+    const { complaints = [] } = req.body;
+    if (!Array.isArray(complaints) || complaints.length === 0) {
       return res.status(400).json({ error: 'No complaints provided' });
     }
+
+    // Validate items but keep original order. We build an array of { valid, payload | error }
+    const items = complaints.map(p => {
+      const theServiceId = p.service_id || p.service || null;
+      const theTechnicianId = p.technician_id || p.technician || null;
+      if (!theServiceId || !theTechnicianId || !p.customer_name || !p.phone || !p.address) {
+        return { valid: false, error: 'validation_failed', payload: p };
+      }
+      return { valid: true, payload: { ...p, service_id: theServiceId, technician_id: theTechnicianId } };
+    });
+
+    const validCount = items.filter(i => i.valid).length;
+    if (validCount === 0) {
+      return res.status(400).json({ error: 'No valid complaints to create', details: items });
+    }
+
+    // Atomically allocate a block of numbers for valid items
+    const padLength = 4; // zero-pad to 4: 0001, 0002...
+    const numbers = await allocateComplaintNumbersPerDay(validCount, { prefix: 'MK', padLength });
+
+    // Save sequentially so assigned numbers and created_at have the same order
     const created = [];
-    for (const p of complaints) {
-      const payload = { ...p, opened_at: p.opened_at || new Date(), status: p.status || 'open' };
+    let seqIndex = 0;
+
+    for (const item of items) {
+      if (!item.valid) {
+        created.push({ error: item.error, payload: item.payload });
+        continue;
+      }
+
+      const p = item.payload;
+      const complaint_no = p.complaint_no || numbers[seqIndex++];
+
+      const payload = {
+        complaint_no,
+        customer_name: p.customer_name,
+        phone: p.phone,
+        phone2: p.phone2 || '',
+        pin_code: p.pin_code || '',
+        address: p.address,
+        service_id: p.service_id,
+        problem_description: p.problem_description || '',
+        technician_id: p.technician_id,
+        remarks: p.remarks || '',
+        status: p.status || 'open',
+        opened_at: p.opened_at || new Date(),
+        created_by: p.created_by || (req.user ? req.user._id : null),
+        created_at: new Date(),
+        meta: p.meta || {},
+      };
+
       const c = new Complaint(payload);
-      await c.save();
-      created.push(c);
-      // missing parts per item
-      if (p.missingParts && Array.isArray(p.missingParts)) {
-        const parts = p.missingParts.filter((x) => x.brand && x.model && x.part_name).map((x) => ({ complaint_id: c._id, ...x }));
-        if (parts.length) await MissingPart.insertMany(parts);
+
+      // Save sequentially and retry on duplicate key (defensive)
+      const savedComplaint = await retryOnDuplicateKey(() => c.save());
+      created.push({ success: true, complaint: savedComplaint });
+
+      // Insert missing parts (await to ensure related docs are saved)
+      if (p.missingParts && Array.isArray(p.missingParts) && p.missingParts.length > 0) {
+        const parts = p.missingParts
+          .filter(x => x.part_name)
+          .map(x => ({ complaint: savedComplaint._id, brand: x.brand || '', model: x.model || '', part_name: x.part_name, qty: x.qty || 1 }));
+        if (parts.length) {
+          try { await MissingPart.insertMany(parts); } catch (errParts) { console.error('missing parts insert failed', errParts); }
+        }
+      }
+
+      // Insert media
+      if (p.complaint_media && Array.isArray(p.complaint_media) && p.complaint_media.length > 0) {
+        const mediaDocs = normalizeMediaDocs(savedComplaint._id, p.complaint_media);
+        if (mediaDocs.length) {
+          try { await ComplaintMedia.insertMany(mediaDocs); } catch (errMedia) { console.error('media insert failed', errMedia); }
+        }
       }
     }
-    res.json({ success: true, created });
+
+    return res.status(201).json({ success: true, created });
   } catch (err) {
     console.error('complaints:batch', err);
-    res.status(500).json({ error: err.message });
+    if (err && err.code === 11000 && err.keyPattern && err.keyPattern.complaint_no) {
+      return res.status(409).json({ error: 'Duplicate complaint_no (retry)' });
+    }
+    return res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
@@ -652,106 +1010,6 @@ router.get('/complaints/:id', async (req, res) => {
   }
 });
 
-// Update complaint generic (patched)
-// router.put('/complaints/:id', async (req, res) => {
-//   try {
-//     const id = req.params.id;
-//     const {
-//       service_id,
-//       service,
-//       technician_id,
-//       technician,
-//       complaint_media,
-//       missing_parts,
-//       ...rest
-//     } = req.body;
-
-//     const theServiceId = service_id || service;
-//     const theTechnicianId = technician_id || technician;
-
-//     const update = { ...rest };
-//     if (theServiceId) update.service_id = theServiceId;
-//     if (theTechnicianId) update.technician_id = theTechnicianId;
-
-//     // update complaint document
-//     const updated = await Complaint.findByIdAndUpdate(id, update, { new: true, runValidators: true });
-//     if (!updated) {
-//       return res.status(404).json({ error: 'Complaint not found' });
-//     }
-
-//     // --- Replace media if complaint_media array provided ---
-//     if (Array.isArray(complaint_media)) {
-//       // remove existing media for this complaint (use field 'complaint' expected by schema)
-//       await ComplaintMedia.deleteMany({ complaint: id });
-
-//       // prepare new media docs; ensure media_url is a string (secure_url or url if object provided)
-//       const mediaDocs = complaint_media.map((m) => {
-//         // m might be { media_url: '...', media_type: 'image' } OR cloudinary object etc.
-//         let mediaUrl = null;
-//         if (!m) mediaUrl = null;
-//         else if (typeof m.media_url === 'string') mediaUrl = m.media_url;
-//         else if (m.provider_response && (m.provider_response.secure_url || m.provider_response.url)) {
-//           mediaUrl = m.provider_response.secure_url || m.provider_response.url;
-//         } else if (m.result && (m.result.secure_url || m.result.url)) {
-//           mediaUrl = m.result.secure_url || m.result.url;
-//         } else if (m.secure_url) {
-//           mediaUrl = m.secure_url;
-//         } else if (m.url) {
-//           mediaUrl = m.url;
-//         }
-
-//         if (!mediaUrl) return null;
-
-//         return {
-//           complaint: id, // IMPORTANT: use 'complaint' field name (match your schema)
-//           media_type: m.media_type || (String(mediaUrl).toLowerCase().includes('.mp4') ? 'video' : 'image'),
-//           media_url: String(mediaUrl),
-//           provider_response: m.provider_response || m.result || null,
-//         };
-//       }).filter(Boolean);
-
-//       if (mediaDocs.length) {
-//         await ComplaintMedia.insertMany(mediaDocs);
-//       }
-//     }
-
-//     // --- Replace missing parts if provided ---
-//     if (Array.isArray(missing_parts)) {
-//       await MissingPart.deleteMany({ complaint: id });
-
-//       const partDocs = missing_parts.map((p) => ({
-//         complaint: id, // IMPORTANT: use 'complaint' field name
-//         brand: p.brand || '',
-//         model: p.model || '',
-//         part_name: p.part_name || '',
-//       })).filter(Boolean);
-
-//       if (partDocs.length) {
-//         await MissingPart.insertMany(partDocs);
-//       }
-//     }
-
-//     // Return updated complaint + related media & parts to keep frontend in sync
-//     const [freshComplaint, media, parts] = await Promise.all([
-//       Complaint.findById(id).lean(),
-//       ComplaintMedia.find({ complaint: id }).lean(),
-//       MissingPart.find({ complaint: id }).lean(),
-//     ]);
-
-//     return res.json({
-//       complaint: freshComplaint,
-//       media,
-//       missingParts: parts,
-//     });
-//   } catch (err) {
-//     console.error('complaints:update', err);
-//     if (err.name === 'ValidationError') {
-//       return res.status(400).json({ error: 'ValidationError', details: err.errors });
-//     }
-//     return res.status(500).json({ error: err.message || 'Internal server error' });
-//   }
-// });
-
 router.put('/complaints/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -790,7 +1048,7 @@ router.put('/complaints/:id', async (req, res) => {
     // Build safe update object: whitelist fields that can be updated via PUT
     const allowedFields = new Set([
       'customer_name', 'phone', 'phone2', 'pin_code', 'address',
-      'service_id', 'problem_description', 'technician_id', 'remarks',
+      'service_id', 'problem_description', 'technician_id','complaint_type', 'remarks',
       'status', 'missing_parts', 'complaint_media',
       'technician_price_charged', 'service_base_price_charged'
     ]);

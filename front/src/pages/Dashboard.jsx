@@ -2,15 +2,6 @@
 import { useEffect, useState } from 'react';
 import { FileText, Users, Wrench, Clock, CheckCircle, XCircle, Package } from 'lucide-react';
 
-/**
- * Dashboard.jsx (fixed)
- *
- * - Robustly reads creation timestamps from common fields (created_at, createdAt, opened_at, openedAt).
- * - Technician Open Requests respects statsMode ('all' | 'today').
- * - Daily Requests (last 7 days) correctly aggregates by IST calendar day.
- * - Toggle in header switches cards and the technician list between All-time and Today.
- */
-
 const BASE = 'https://maurya-electronics.vercel.app/api';
 const ENDPOINTS = {
   complaints: `${BASE}/complaints`,
@@ -56,7 +47,8 @@ export default function Dashboard({
   complaints: complaintsProp = [],
   employees: employeesProp = [],
   technicians: techniciansProp = [],
-}) {
+}) 
+{
   const [statsMode, setStatsMode] = useState('all'); // 'all' | 'today'
   const [statsAll, setStatsAll] = useState({
     open: 0,
@@ -85,6 +77,8 @@ export default function Dashboard({
   const [complaints, setComplaints] = useState(Array.isArray(complaintsProp) ? complaintsProp.map(normalizeId) : []);
   const [employees, setEmployees] = useState(Array.isArray(employeesProp) ? employeesProp.map(normalizeId) : []);
   const [technicians, setTechnicians] = useState(Array.isArray(techniciansProp) ? techniciansProp.map(normalizeId) : []);
+  const [previewStatusFilter, setPreviewStatusFilter] = useState('all');
+
 
   useEffect(() => {
     // seed from props if present
@@ -223,6 +217,7 @@ export default function Dashboard({
     });
     setDailyStats(daily);
   }
+  const statusKeys = ['open', 'closed', 'cancelled', 'pending_parts'];
 
   // UI helpers
   const statCardsConfig = [
@@ -237,6 +232,10 @@ export default function Dashboard({
   const displayedStats = statsMode === 'today' ? statsToday : statsAll;
   const maxDaily = Math.max(...(dailyStats.map((d) => d.count) || []), 1);
   const maxTechOpen = Math.max(...(technicianStats.map((t) => t.open_requests) || []), 1);
+ const previewComplaints = (previewStatusFilter === 'all'
+    ? complaints
+    : complaints.filter((c) => (String(c?.status || '').toLowerCase() === previewStatusFilter))
+  ).slice(0, 6); // top 6 preview rows
 
   return (
     <div>
@@ -293,7 +292,7 @@ export default function Dashboard({
         })}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
         <div className="bg-white rounded-xl shadow-md p-6">
           <h2 className="text-xl font-bold text-gray-900 mb-6">
             <FileText className="inline mr-2" size={24} />
@@ -350,7 +349,90 @@ export default function Dashboard({
           <div className="text-xs text-gray-500 mt-3">Counts grouped by calendar day in Asia/Kolkata (IST)</div>
         </div>
       </div>
+
+       <div className="bg-white rounded-xl shadow-md p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold">Complaints Preview</h2>
+          <div className="flex items-center gap-2">
+            {['all', ...statusKeys].map((s) => (
+              <button
+                key={s}
+                onClick={() => setPreviewStatusFilter(s)}
+                className={`px-3 py-1 rounded text-sm ${
+                  previewStatusFilter === s ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                {s === 'all' ? 'All' : s.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+              </button>
+            ))}
+            <button
+              onClick={() => navigate('/complaints')}
+              className="px-3 py-1 rounded text-sm bg-gray-100 hover:bg-gray-200"
+              title="Open full complaints page"
+            >
+              View all
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm table-fixed">
+            <thead>
+              <tr className="text-left text-xs text-gray-500 border-b">
+                <th className="py-2 pr-4 w-36">Complaint #</th>
+                <th className="py-2 pr-4">Customer</th>
+                <th className="py-2 pr-4 w-28">Phone</th>
+                <th className="py-2 pr-4 w-28">Status</th>
+                <th className="py-2 pr-4 w-36">Created (IST)</th>
+                <th className="py-2 pr-4 w-28">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {previewComplaints.length === 0 && (
+                <tr>
+                  <td colSpan="6" className="py-6 text-center text-gray-500">No complaints for this filter</td>
+                </tr>
+              )}
+              {previewComplaints.map((c) => (
+                <tr key={c.id || c.complaint_no} className="border-b hover:bg-gray-50">
+                  <td className="py-3 pr-4 font-medium">{c.complaint_no ?? c.id ?? '-'}</td>
+                  <td className="py-3 pr-4">{c.customer_name ?? '-'}</td>
+                  <td className="py-3 pr-4">{c.phone ?? '-'}</td>
+                  <td className="py-3 pr-4">
+                    <span
+                      className={`px-2 py-0.5 rounded text-xs font-medium ${
+                        (c.status || '').toLowerCase() === 'open' ? 'bg-blue-100 text-blue-800'
+                          : (c.status || '').toLowerCase() === 'closed' ? 'bg-green-100 text-green-800'
+                          : (c.status || '').toLowerCase() === 'cancelled' ? 'bg-red-100 text-red-800'
+                          : (c.status || '').toLowerCase() === 'pending_parts' ? 'bg-yellow-100 text-yellow-800'
+                          : 'bg-gray-100 text-gray-800'
+                      }`}
+                    >
+                      {(c.status || '').replace('_', ' ')}
+                    </span>
+                  </td>
+                  <td className="py-3 pr-4">{safeDateOnlyKolkataFromAny(complaintCreatedDateVal(c))}</td>
+                  <td className="py-3 pr-4">
+                    <button
+                      onClick={() => navigate(`/complaints?status=${encodeURIComponent((c.status || '').toLowerCase())}&id=${encodeURIComponent(c.id ?? c.complaint_no ?? '')}`)}
+                      className="text-sm px-2 py-1 bg-gray-100 rounded hover:bg-gray-200"
+                    >
+                      Open
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-4 text-xs text-gray-500">
+          Preview shows up to 6 entries. Click "View all" or the status cards to open the full complaints list filtered by status.
+        </div>
+      </div>
+
     </div>
+    
   );
 }
 
